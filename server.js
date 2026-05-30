@@ -1,116 +1,183 @@
 const express = require("express");
-const { execSync, spawnSync } = require("child_process");
-const fs = require("fs");
-const path = require("path");
+const https = require("https");
 const crypto = require("crypto");
 
 const app = express();
 app.use(express.json());
 
-// Map language → Docker Hub image
-const RUNNER_IMAGES = {
-  kotlin: "codedabtech/abccodes-runner-kotlin",
-  java: "codedabtech/abccodes-runner-java",
-  swift: "codedabtech/abccodes-runner-swift",
-};
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const GITHUB_REPO = process.env.GITHUB_REPO || "code-abcodes/mobile-build-service";
+const PUBLIC_URL = process.env.PUBLIC_URL || "https://mobile-build-service-production.up.railway.app";
 
-// Default build commands per language
-const DEFAULT_BUILD_COMMANDS = {
-  kotlin: "./gradlew assembleDebug",
-  java: "./gradlew assembleDebug",
-  swift: "swift build",
-};
+// In-memory job store — holds pending and completed results
+// { [jobId]: { status: "pending"|"done", result: {...} } }
+const jobs = {};
+
+// ── Health ────────────────────────────────────────────────────────────────────
 
 app.get("/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
-// POST /build
-// Body: { repoUrl, branch, language, buildCommand? }
+// ── POST /build ───────────────────────────────────────────────────────────────
+// Called by evaluation-worker.
+// Triggers a GitHub Actions workflow_dispatch and polls for the result.
+// Body: { repoUrl, branch, language, buildCommand }
 // Returns: { success, exitCode, output }
-app.post("/build", (req, res) => {
-  const { repoUrl, branch = "main", language = "kotlin", buildCommand } = req.body;
+
+app.post("/build", async (req, res) => {
+  const {
+    repoUrl,
+    branch = "main",
+    language = "kotlin",
+    buildCommand = "./gradlew assembleDebug",
+  } = req.body;
 
   if (!repoUrl) {
     return res.status(400).json({ success: false, output: "repoUrl is required" });
   }
-
-  const image = RUNNER_IMAGES[language];
-  if (!image) {
-    return res.status(400).json({
-      success: false,
-      output: `no runner image configured for language: ${language}`,
-    });
+  if (!GITHUB_TOKEN) {
+    return res.status(500).json({ success: false, output: "GITHUB_TOKEN not configured on mobile-build-service" });
   }
 
-  const cmd = buildCommand || DEFAULT_BUILD_COMMANDS[language] || "echo 'no build command'";
+  const jobId = crypto.randomBytes(12).toString("hex");
+  jobs[jobId] = { status: "pending" };
 
-  // Use a unique temp dir per request to avoid collisions
-  const runID = crypto.randomBytes(8).toString("hex");
-  const workDir = `/tmp/mobile-build-${runID}`;
+  const webhookUrl = `${PUBLIC_URL}/webhook/${jobId}`;
+  const defaultBuildCommands = {
+    kotlin: "./gradlew assembleDebug",
+    java: "./gradlew assembleDebug",
+    swift: "swift build",
+  };
+  const resolvedBuildCommand = buildCommand || defaultBuildCommands[language] || "echo 'no build command'";
 
-  let output = "";
+  console.log(`[${jobId}] triggering GitHub Actions: repo=${repoUrl} branch=${branch} lang=${language}`);
 
   try {
-    // 1. Clone the repo
-    fs.mkdirSync(workDir, { recursive: true });
-    output += `[clone] git clone --depth 1 --branch ${branch} ${repoUrl} ${workDir}\n`;
-    const clone = spawnSync(
-      "git",
-      ["clone", "--depth", "1", "--branch", branch, repoUrl, workDir],
-      { encoding: "utf8", timeout: 60_000 }
-    );
-    output += clone.stdout || "";
-    output += clone.stderr || "";
-    if (clone.status !== 0) {
-      return res.json({ success: false, exitCode: clone.status, output });
-    }
-
-    // 2. Pull the runner image
-    output += `\n[docker pull] ${image}\n`;
-    const pull = spawnSync("docker", ["pull", image], {
-      encoding: "utf8",
-      timeout: 120_000,
+    await triggerWorkflow({
+      repo_url: repoUrl,
+      branch,
+      language,
+      build_command: resolvedBuildCommand,
+      job_id: jobId,
+      webhook_url: webhookUrl,
     });
-    output += pull.stdout || "";
-    output += pull.stderr || "";
-    if (pull.status !== 0) {
-      return res.json({ success: false, exitCode: pull.status, output });
-    }
-
-    // 3. Run the build inside the container
-    // Mount the cloned repo into /workspace inside the container
-    output += `\n[docker run] image=${image} cmd=${cmd}\n`;
-    const run = spawnSync(
-      "docker",
-      [
-        "run",
-        "--rm",
-        "-v", `${workDir}:/workspace`,
-        "-w", "/workspace",
-        image,
-        "sh", "-c", cmd,
-      ],
-      { encoding: "utf8", timeout: 300_000 }
-    );
-    output += run.stdout || "";
-    output += run.stderr || "";
-
-    const exitCode = run.status ?? 1;
-    return res.json({ success: exitCode === 0, exitCode, output });
-
   } catch (err) {
-    output += `\n[error] ${err.message}`;
-    return res.json({ success: false, exitCode: 1, output });
-  } finally {
-    // Clean up cloned repo
-    try {
-      fs.rmSync(workDir, { recursive: true, force: true });
-    } catch (_) {}
+    delete jobs[jobId];
+    return res.status(500).json({
+      success: false,
+      output: "failed to trigger GitHub Actions workflow: " + err.message,
+    });
   }
+
+  // Poll for result — GitHub Actions typically takes 1-5 min for a Kotlin build
+  // Poll every 10s, timeout after 10 min
+  const POLL_INTERVAL_MS = 10_000;
+  const TIMEOUT_MS = 10 * 60 * 1000;
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < TIMEOUT_MS) {
+    await sleep(POLL_INTERVAL_MS);
+    const job = jobs[jobId];
+    if (job && job.status === "done") {
+      delete jobs[jobId];
+      console.log(`[${jobId}] done: success=${job.result.success} exitCode=${job.result.exitCode}`);
+      return res.json(job.result);
+    }
+  }
+
+  // Timed out
+  delete jobs[jobId];
+  console.log(`[${jobId}] timed out after 10 min`);
+  return res.json({
+    success: false,
+    exitCode: 1,
+    output: "build timed out after 10 minutes — the Kotlin build may have hung or the runner image is too slow to start",
+  });
 });
+
+// ── POST /webhook/:jobId ──────────────────────────────────────────────────────
+// Called by GitHub Actions when the build completes.
+// Body: { jobId, success, exitCode, output }
+
+app.post("/webhook/:jobId", (req, res) => {
+  const { jobId } = req.params;
+  const { success, exitCode, output } = req.body;
+
+  if (!jobs[jobId]) {
+    console.warn(`[${jobId}] webhook received for unknown job — ignoring`);
+    return res.status(404).json({ error: "unknown job" });
+  }
+
+  console.log(`[${jobId}] webhook received: success=${success} exitCode=${exitCode}`);
+  jobs[jobId] = {
+    status: "done",
+    result: { success: !!success, exitCode: exitCode ?? 1, output: output || "" },
+  };
+
+  res.json({ ok: true });
+});
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function triggerWorkflow(inputs) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({
+      ref: "main",
+      inputs: {
+        repo_url: inputs.repo_url,
+        branch: inputs.branch,
+        language: inputs.language,
+        build_command: inputs.build_command,
+        job_id: inputs.job_id,
+        webhook_url: inputs.webhook_url,
+      },
+    });
+
+    const [owner, repo] = GITHUB_REPO.split("/");
+    const options = {
+      hostname: "api.github.com",
+      path: `/repos/${owner}/${repo}/actions/workflows/mobile-build.yml/dispatches`,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${GITHUB_TOKEN}`,
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "mobile-build-service",
+        "Content-Length": Buffer.byteLength(body),
+      },
+    };
+
+    const req = https.request(options, (res) => {
+      let data = "";
+      res.on("data", (chunk) => { data += chunk; });
+      res.on("end", () => {
+        // 204 = success, no content
+        if (res.statusCode === 204) {
+          resolve();
+        } else {
+          reject(new Error(`GitHub API returned ${res.statusCode}: ${data}`));
+        }
+      });
+    });
+
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ── Start ─────────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`mobile-build-service listening on port ${PORT}`);
+  console.log(`  GitHub repo:  ${GITHUB_REPO}`);
+  console.log(`  Public URL:   ${PUBLIC_URL}`);
+  console.log(`  Token set:    ${!!GITHUB_TOKEN}`);
 });

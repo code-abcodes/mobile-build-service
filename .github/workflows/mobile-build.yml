@@ -1,0 +1,86 @@
+name: mobile-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_url:
+        description: "Student repo URL to clone"
+        required: true
+      branch:
+        description: "Branch to build"
+        required: true
+        default: "main"
+      language:
+        description: "Language (kotlin/java/swift)"
+        required: true
+        default: "kotlin"
+      build_command:
+        description: "Build command to run"
+        required: true
+        default: "./gradlew assembleDebug"
+      job_id:
+        description: "Unique job ID to correlate the result"
+        required: true
+      webhook_url:
+        description: "URL to POST the result back to"
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Clone student repo
+        run: |
+          git clone --depth 1 --branch "${{ github.event.inputs.branch }}" \
+            "${{ github.event.inputs.repo_url }}" /workspace
+        continue-on-error: false
+
+      - name: Pull runner image
+        run: |
+          LANGUAGE="${{ github.event.inputs.language }}"
+          case "$LANGUAGE" in
+            kotlin) IMAGE="codedabtech/abccodes-runner-kotlin" ;;
+            java)   IMAGE="codedabtech/abccodes-runner-java" ;;
+            swift)  IMAGE="codedabtech/abccodes-runner-swift" ;;
+            *)      IMAGE="codedabtech/abccodes-runner-kotlin" ;;
+          esac
+          echo "RUNNER_IMAGE=$IMAGE" >> $GITHUB_ENV
+          docker pull "$IMAGE"
+
+      - name: Run build
+        id: run_build
+        run: |
+          set +e
+          OUTPUT=$(docker run --rm \
+            -v /workspace:/workspace \
+            -w /workspace \
+            "$RUNNER_IMAGE" \
+            sh -c "${{ github.event.inputs.build_command }}" 2>&1)
+          EXIT_CODE=$?
+          set -e
+          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+          # Write output to file to avoid quoting issues
+          echo "$OUTPUT" > /tmp/build_output.txt
+          echo "Build exit code: $EXIT_CODE"
+          echo "--- Build output ---"
+          cat /tmp/build_output.txt
+
+      - name: Post result to webhook
+        if: always()
+        run: |
+          EXIT_CODE="${{ steps.run_build.outputs.exit_code }}"
+          OUTPUT=$(cat /tmp/build_output.txt 2>/dev/null || echo "no output captured")
+          SUCCESS="false"
+          if [ "$EXIT_CODE" = "0" ]; then SUCCESS="true"; fi
+
+          # Escape output as JSON string
+          OUTPUT_JSON=$(echo "$OUTPUT" | python3 -c "
+          import sys, json
+          print(json.dumps(sys.stdin.read()))
+          ")
+
+          curl -s -X POST "${{ github.event.inputs.webhook_url }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"jobId\": \"${{ github.event.inputs.job_id }}\", \"success\": $SUCCESS, \"exitCode\": $EXIT_CODE, \"output\": $OUTPUT_JSON}"
