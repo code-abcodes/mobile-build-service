@@ -18,6 +18,10 @@ on:
         description: "Build command to run"
         required: true
         default: "./gradlew assembleDebug"
+      test_command:
+        description: "Test command to run after build"
+        required: false
+        default: "./gradlew test"
       job_id:
         description: "Unique job ID to correlate the result"
         required: true
@@ -35,7 +39,6 @@ jobs:
         run: |
           git clone --depth 1 --branch "${{ github.event.inputs.branch }}" \
             "${{ github.event.inputs.repo_url }}" student-repo
-        continue-on-error: false
 
       - name: Pull runner image
         run: |
@@ -62,30 +65,52 @@ jobs:
           set -e
           echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
           echo "$OUTPUT" > /tmp/build_output.txt
-          echo "Build exit code: $EXIT_CODE"
-          echo "--- Build output ---"
-          cat /tmp/build_output.txt
+
+      - name: Run tests
+        id: run_tests
+        if: steps.run_build.outputs.exit_code == '0'
+        run: |
+          set +e
+          TEST_CMD="${{ github.event.inputs.test_command }}"
+          if [ -z "$TEST_CMD" ]; then
+            TEST_CMD="./gradlew test"
+          fi
+          TEST_OUTPUT=$(docker run --rm \
+            -v ${{ github.workspace }}/student-repo:/workspace \
+            -w /workspace \
+            "$RUNNER_IMAGE" \
+            sh -c "chmod +x gradlew 2>/dev/null || true && $TEST_CMD" 2>&1)
+          TEST_EXIT=$?
+          set -e
+          echo "exit_code=$TEST_EXIT" >> $GITHUB_OUTPUT
+          echo "$TEST_OUTPUT" >> /tmp/build_output.txt
+          echo "--- Test output ---"
+          echo "$TEST_OUTPUT"
 
       - name: Post result to webhook
         if: always()
         run: |
-          RAW_EXIT="${{ steps.run_build.outputs.exit_code }}"
-          EXIT_CODE="${RAW_EXIT:-1}"
-
-          OUTPUT=$(cat /tmp/build_output.txt 2>/dev/null || echo "build step did not produce output")
+          BUILD_EXIT="${{ steps.run_build.outputs.exit_code }}"
+          BUILD_EXIT="${BUILD_EXIT:-1}"
+          TEST_EXIT="${{ steps.run_tests.outputs.exit_code }}"
+          # If build failed, test never ran — use -1 to signal "not run"
+          if [ -z "$TEST_EXIT" ]; then
+            TEST_EXIT="-1"
+          fi
 
           python3 - <<PYEOF
-          import json, subprocess, sys
+          import json, subprocess, os
 
-          exit_code = int("$EXIT_CODE")
-          success   = exit_code == 0
-          output    = open("/tmp/build_output.txt").read() if __import__("os").path.exists("/tmp/build_output.txt") else "no output captured"
+          build_exit = int("$BUILD_EXIT")
+          test_exit  = int("$TEST_EXIT")
+          output     = open("/tmp/build_output.txt").read() if os.path.exists("/tmp/build_output.txt") else "no output captured"
 
           payload = json.dumps({
-              "jobId":    "${{ github.event.inputs.job_id }}",
-              "success":  success,
-              "exitCode": exit_code,
-              "output":   output,
+              "jobId":         "${{ github.event.inputs.job_id }}",
+              "success":       build_exit == 0 and test_exit in (0, -1),
+              "exitCode":      build_exit,
+              "testExitCode":  test_exit,
+              "output":        output,
           })
 
           result = subprocess.run(

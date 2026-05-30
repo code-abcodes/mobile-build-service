@@ -54,11 +54,14 @@ app.post("/build", async (req, res) => {
   console.log(`[${jobId}] triggering GitHub Actions: repo=${repoUrl} branch=${branch} lang=${language}`);
 
   try {
+    const testCommand = req.body.testCommand || "";
+
     await triggerWorkflow({
       repo_url: repoUrl,
       branch,
       language,
       build_command: resolvedBuildCommand,
+      test_command: testCommand,
       job_id: jobId,
       webhook_url: webhookUrl,
     });
@@ -102,7 +105,7 @@ app.post("/build", async (req, res) => {
 
 app.post("/webhook/:jobId", (req, res) => {
   const { jobId } = req.params;
-  const { success, exitCode, output } = req.body;
+  const { success, exitCode, testExitCode, output } = req.body;
 
   if (!jobs[jobId]) {
     console.warn(`[${jobId}] webhook received for unknown job — ignoring`);
@@ -112,7 +115,12 @@ app.post("/webhook/:jobId", (req, res) => {
   console.log(`[${jobId}] webhook received: success=${success} exitCode=${exitCode}`);
   jobs[jobId] = {
     status: "done",
-    result: { success: !!success, exitCode: exitCode ?? 1, output: output || "" },
+    result: {
+      success: !!success,
+      exitCode: exitCode ?? 1,
+      testExitCode: testExitCode ?? -1,
+      output: output || "",
+    },
   };
 
   res.json({ ok: true });
@@ -129,6 +137,7 @@ function triggerWorkflow(inputs) {
         branch: inputs.branch,
         language: inputs.language,
         build_command: inputs.build_command,
+        test_command: inputs.test_command || "",
         job_id: inputs.job_id,
         webhook_url: inputs.webhook_url,
       },
