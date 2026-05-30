@@ -34,7 +34,7 @@ jobs:
       - name: Clone student repo
         run: |
           git clone --depth 1 --branch "${{ github.event.inputs.branch }}" \
-            "${{ github.event.inputs.repo_url }}" /workspace
+            "${{ github.event.inputs.repo_url }}" student-repo
         continue-on-error: false
 
       - name: Pull runner image
@@ -54,14 +54,13 @@ jobs:
         run: |
           set +e
           OUTPUT=$(docker run --rm \
-            -v /workspace:/workspace \
+            -v ${{ github.workspace }}/student-repo:/workspace \
             -w /workspace \
             "$RUNNER_IMAGE" \
             sh -c "chmod +x gradlew 2>/dev/null || true && ${{ github.event.inputs.build_command }}" 2>&1)
           EXIT_CODE=$?
           set -e
           echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
-          # Write output to file to avoid quoting issues
           echo "$OUTPUT" > /tmp/build_output.txt
           echo "Build exit code: $EXIT_CODE"
           echo "--- Build output ---"
@@ -70,14 +69,11 @@ jobs:
       - name: Post result to webhook
         if: always()
         run: |
-          # Default exit_code to 1 if the run_build step was skipped or its
-          # output was never set (e.g. the step itself failed before echo).
           RAW_EXIT="${{ steps.run_build.outputs.exit_code }}"
           EXIT_CODE="${RAW_EXIT:-1}"
 
           OUTPUT=$(cat /tmp/build_output.txt 2>/dev/null || echo "build step did not produce output")
 
-          # Build the entire JSON payload in Python so quoting/escaping is safe.
           python3 - <<PYEOF
           import json, subprocess, sys
 
