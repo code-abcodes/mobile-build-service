@@ -57,7 +57,7 @@ jobs:
             -v /workspace:/workspace \
             -w /workspace \
             "$RUNNER_IMAGE" \
-            sh -c "${{ github.event.inputs.build_command }}" 2>&1)
+            sh -c "chmod +x gradlew 2>/dev/null || true && ${{ github.event.inputs.build_command }}" 2>&1)
           EXIT_CODE=$?
           set -e
           echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
