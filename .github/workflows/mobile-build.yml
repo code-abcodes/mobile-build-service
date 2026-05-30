@@ -70,17 +70,34 @@ jobs:
       - name: Post result to webhook
         if: always()
         run: |
-          EXIT_CODE="${{ steps.run_build.outputs.exit_code }}"
-          OUTPUT=$(cat /tmp/build_output.txt 2>/dev/null || echo "no output captured")
-          SUCCESS="false"
-          if [ "$EXIT_CODE" = "0" ]; then SUCCESS="true"; fi
+          # Default exit_code to 1 if the run_build step was skipped or its
+          # output was never set (e.g. the step itself failed before echo).
+          RAW_EXIT="${{ steps.run_build.outputs.exit_code }}"
+          EXIT_CODE="${RAW_EXIT:-1}"
 
-          # Escape output as JSON string
-          OUTPUT_JSON=$(echo "$OUTPUT" | python3 -c "
-          import sys, json
-          print(json.dumps(sys.stdin.read()))
-          ")
+          OUTPUT=$(cat /tmp/build_output.txt 2>/dev/null || echo "build step did not produce output")
 
-          curl -s -X POST "${{ github.event.inputs.webhook_url }}" \
-            -H "Content-Type: application/json" \
-            -d "{\"jobId\": \"${{ github.event.inputs.job_id }}\", \"success\": $SUCCESS, \"exitCode\": $EXIT_CODE, \"output\": $OUTPUT_JSON}"
+          # Build the entire JSON payload in Python so quoting/escaping is safe.
+          python3 - <<PYEOF
+          import json, subprocess, sys
+
+          exit_code = int("$EXIT_CODE")
+          success   = exit_code == 0
+          output    = open("/tmp/build_output.txt").read() if __import__("os").path.exists("/tmp/build_output.txt") else "no output captured"
+
+          payload = json.dumps({
+              "jobId":    "${{ github.event.inputs.job_id }}",
+              "success":  success,
+              "exitCode": exit_code,
+              "output":   output,
+          })
+
+          result = subprocess.run(
+              ["curl", "-s", "-X", "POST",
+               "${{ github.event.inputs.webhook_url }}",
+               "-H", "Content-Type: application/json",
+               "-d", payload],
+              capture_output=True, text=True
+          )
+          print("webhook response:", result.stdout, result.stderr)
+          PYEOF
