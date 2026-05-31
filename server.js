@@ -26,11 +26,12 @@ app.get("/health", (req, res) => {
 // Returns: { success, exitCode, output }
 
 app.post("/build", async (req, res) => {
-  const {
+const {
     repoUrl,
     branch = "main",
     language = "kotlin",
     buildCommand = "./gradlew assembleDebug",
+    expectedOutputFile = "app/build/outputs/apk/debug/app-debug.apk",
   } = req.body;
 
   if (!repoUrl) {
@@ -62,6 +63,7 @@ app.post("/build", async (req, res) => {
       language,
       build_command: resolvedBuildCommand,
       test_command: testCommand,
+      expected_output_file: expectedOutputFile,
       job_id: jobId,
       webhook_url: webhookUrl,
     });
@@ -105,7 +107,7 @@ app.post("/build", async (req, res) => {
 
 app.post("/webhook/:jobId", (req, res) => {
   const { jobId } = req.params;
-  const { success, exitCode, testExitCode, output } = req.body;
+  const { success, exitCode, testExitCode, outputFound, output } = req.body;
 
   if (!jobs[jobId]) {
     console.warn(`[${jobId}] webhook received for unknown job — ignoring`);
@@ -119,6 +121,7 @@ app.post("/webhook/:jobId", (req, res) => {
       success: !!success,
       exitCode: exitCode ?? 1,
       testExitCode: testExitCode ?? -1,
+      outputFound: outputFound !== false,
       output: output || "",
     },
   };
@@ -138,6 +141,7 @@ function triggerWorkflow(inputs) {
         language: inputs.language,
         build_command: inputs.build_command,
         test_command: inputs.test_command || "",
+        expected_output_file: inputs.expected_output_file || "",
         job_id: inputs.job_id,
         webhook_url: inputs.webhook_url,
       },

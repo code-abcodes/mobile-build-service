@@ -22,6 +22,10 @@ on:
         description: "Test command to run after build"
         required: false
         default: "./gradlew test"
+      expected_output_file:
+        description: "Expected APK/output path relative to repo root"
+        required: false
+        default: "app/build/outputs/apk/debug/app-debug.apk"
       job_id:
         description: "Unique job ID to correlate the result"
         required: true
@@ -87,29 +91,59 @@ jobs:
           echo "--- Test output ---"
           echo "$TEST_OUTPUT"
 
+      - name: Check expected output file
+        id: check_output
+        if: steps.run_build.outputs.exit_code == '0'
+        run: |
+          EXPECTED="${{ github.event.inputs.expected_output_file }}"
+          if [ -z "$EXPECTED" ]; then
+            echo "output_found=true" >> $GITHUB_OUTPUT
+          elif docker run --rm \
+            -v ${{ github.workspace }}/student-repo:/workspace \
+            -w /workspace \
+            "$RUNNER_IMAGE" \
+            sh -c "test -f '$EXPECTED'"; then
+            echo "output_found=true" >> $GITHUB_OUTPUT
+            echo "Output file found at $EXPECTED"
+          else
+            echo "output_found=false" >> $GITHUB_OUTPUT
+            echo "Output file NOT found at $EXPECTED"
+            docker run --rm \
+              -v ${{ github.workspace }}/student-repo:/workspace \
+              -w /workspace \
+              "$RUNNER_IMAGE" \
+              sh -c "find app/build/outputs -name '*.apk' 2>/dev/null || echo 'no APK files found'" \
+              >> /tmp/build_output.txt || true
+          fi
+
       - name: Post result to webhook
         if: always()
         run: |
           BUILD_EXIT="${{ steps.run_build.outputs.exit_code }}"
           BUILD_EXIT="${BUILD_EXIT:-1}"
           TEST_EXIT="${{ steps.run_tests.outputs.exit_code }}"
-          # If build failed, test never ran — use -1 to signal "not run"
           if [ -z "$TEST_EXIT" ]; then
             TEST_EXIT="-1"
+          fi
+          OUTPUT_FOUND="${{ steps.check_output.outputs.output_found }}"
+          if [ -z "$OUTPUT_FOUND" ]; then
+            OUTPUT_FOUND="false"
           fi
 
           python3 - <<PYEOF
           import json, subprocess, os
 
-          build_exit = int("$BUILD_EXIT")
-          test_exit  = int("$TEST_EXIT")
-          output     = open("/tmp/build_output.txt").read() if os.path.exists("/tmp/build_output.txt") else "no output captured"
+          build_exit    = int("$BUILD_EXIT")
+          test_exit     = int("$TEST_EXIT")
+          output_found  = "$OUTPUT_FOUND" == "true"
+          output        = open("/tmp/build_output.txt").read() if os.path.exists("/tmp/build_output.txt") else "no output captured"
 
           payload = json.dumps({
               "jobId":         "${{ github.event.inputs.job_id }}",
-              "success":       build_exit == 0 and test_exit in (0, -1),
+              "success":       build_exit == 0 and test_exit in (0, -1) and output_found,
               "exitCode":      build_exit,
               "testExitCode":  test_exit,
+              "outputFound":   output_found,
               "output":        output,
           })
 
