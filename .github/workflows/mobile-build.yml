@@ -60,6 +60,15 @@ jobs:
         id: run_build
         run: |
           set +e
+          # Fix: patch settings.gradle to allow project-level maven repos
+          SETTINGS_FILE="${{ github.workspace }}/student-repo/settings.gradle"
+          SETTINGS_KTS="${{ github.workspace }}/student-repo/settings.gradle.kts"
+          if [ -f "$SETTINGS_FILE" ]; then
+            sed -i 's/RepositoriesMode\.FAIL_ON_PROJECT_REPOS/RepositoriesMode.PREFER_PROJECT/g' "$SETTINGS_FILE"
+          fi
+          if [ -f "$SETTINGS_KTS" ]; then
+            sed -i 's/RepositoriesMode\.FAIL_ON_PROJECT_REPOS/RepositoriesMode.PREFER_PROJECT/g' "$SETTINGS_KTS"
+          fi
           OUTPUT=$(docker run --rm \
             -v ${{ github.workspace }}/student-repo:/workspace \
             -w /workspace \
