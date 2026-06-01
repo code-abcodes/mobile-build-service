@@ -60,20 +60,14 @@ jobs:
         id: run_build
         run: |
           set +e
-          # Fix: patch settings.gradle to allow project-level maven repos
-          SETTINGS_FILE="${{ github.workspace }}/student-repo/settings.gradle"
-          SETTINGS_KTS="${{ github.workspace }}/student-repo/settings.gradle.kts"
-          if [ -f "$SETTINGS_FILE" ]; then
-            sed -i 's/RepositoriesMode\.FAIL_ON_PROJECT_REPOS/RepositoriesMode.PREFER_PROJECT/g' "$SETTINGS_FILE"
-          fi
-          if [ -f "$SETTINGS_KTS" ]; then
-            sed -i 's/RepositoriesMode\.FAIL_ON_PROJECT_REPOS/RepositoriesMode.PREFER_PROJECT/g' "$SETTINGS_KTS"
-          fi
           OUTPUT=$(docker run --rm \
             -v ${{ github.workspace }}/student-repo:/workspace \
             -w /workspace \
             "$RUNNER_IMAGE" \
-            sh -c "chmod +x gradlew 2>/dev/null || true && ${{ github.event.inputs.build_command }}" 2>&1)
+            sh -c "chmod +x gradlew 2>/dev/null || true && \
+              sed -i 's/RepositoriesMode\.FAIL_ON_PROJECT_REPOS/RepositoriesMode.PREFER_PROJECT/g' settings.gradle 2>/dev/null || true && \
+              sed -i 's/RepositoriesMode\.FAIL_ON_PROJECT_REPOS/RepositoriesMode.PREFER_PROJECT/g' settings.gradle.kts 2>/dev/null || true && \
+              ${{ github.event.inputs.build_command }}" 2>&1)
           EXIT_CODE=$?
           set -e
           echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
