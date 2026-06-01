@@ -70,6 +70,10 @@ jobs:
           echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
           echo "$OUTPUT" > /tmp/build_output.txt
 
+      - name: Debug build output
+        if: always()
+        run: cat /tmp/build_output.txt
+
       - name: Run tests
         id: run_tests
         if: steps.run_build.outputs.exit_code == '0'
