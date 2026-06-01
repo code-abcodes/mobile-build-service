@@ -20,7 +20,7 @@ RUN mkdir -p ${ANDROID_HOME}/cmdline-tools && \
 RUN yes | sdkmanager --licenses && \
     sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
-# Install Gradle
+# Install standalone Gradle (for reference, not used by gradlew)
 RUN wget -q https://services.gradle.org/distributions/gradle-8.6-bin.zip \
       -O /tmp/gradle.zip && \
     mkdir -p /opt/gradle && \
@@ -28,9 +28,10 @@ RUN wget -q https://services.gradle.org/distributions/gradle-8.6-bin.zip \
     rm /tmp/gradle.zip && \
     ln -s /opt/gradle/gradle-8.6/bin/gradle /usr/local/bin/gradle
 
-# Create minimal Android project to pre-cache dependencies
+# Create minimal Android project to pre-cache dependencies via gradlew
 RUN mkdir -p /cache-project/app/src/main/java/com/cache && \
-    mkdir -p /cache-project/app/src/main/res
+    mkdir -p /cache-project/app/src/main/res && \
+    mkdir -p /cache-project/gradle/wrapper
 
 RUN printf 'pluginManagement {\n    repositories {\n        google()\n        mavenCentral()\n        gradlePluginPortal()\n    }\n}\ndependencyResolutionManagement {\n    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)\n    repositories {\n        google()\n        mavenCentral()\n    }\n}\nrootProject.name = "cache"\ninclude ":app"\n' \
     > /cache-project/settings.gradle
@@ -44,9 +45,21 @@ RUN printf 'plugins {\n    id "com.android.application"\n}\nandroid {\n    names
 RUN printf '<?xml version="1.0" encoding="utf-8"?>\n<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n    <application></application>\n</manifest>\n' \
     > /cache-project/app/src/main/AndroidManifest.xml
 
-RUN cd /cache-project && \
-    gradle :app:assembleDebug --no-daemon 2>&1 || true
+RUN printf 'distributionBase=GRADLE_USER_HOME\ndistributionPath=wrapper/dists\ndistributionUrl=https\\://services.gradle.org/distributions/gradle-8.6-bin.zip\nzipStoreBase=GRADLE_USER_HOME\nzipStorePath=wrapper/dists\n' \
+    > /cache-project/gradle/wrapper/gradle-wrapper.properties
 
+# Download gradlew script
+RUN wget -q https://raw.githubusercontent.com/gradle/gradle/v8.6.0/gradlew \
+      -O /cache-project/gradlew && \
+    chmod +x /cache-project/gradlew
+
+# Run actual build to populate Gradle wrapper cache and Maven local cache
+RUN cd /cache-project && \
+    ./gradlew :app:assembleDebug --no-daemon 2>&1 | tail -30 && \
+    echo "=== Pre-cache build SUCCEEDED ===" || \
+    echo "=== Pre-cache build FAILED ==="
+
+# Make cache readable by any user
 RUN chmod -R a+rX /root/.gradle 2>/dev/null || true
 
 # Download Checkstyle
