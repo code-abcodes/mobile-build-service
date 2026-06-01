@@ -44,6 +44,62 @@ jobs:
           git clone --depth 1 --branch "${{ github.event.inputs.branch }}" \
             "${{ github.event.inputs.repo_url }}" student-repo
 
+      - name: Patch settings.gradle
+        run: |
+          SETTINGS="student-repo/settings.gradle"
+          if [ -f "$SETTINGS" ]; then
+            python3 - <<'PYEOF'
+import re
+
+path = "student-repo/settings.gradle"
+content = open(path).read()
+
+# Fix repository mode
+content = content.replace(
+    "RepositoriesMode.FAIL_ON_PROJECT_REPOS",
+    "RepositoriesMode.PREFER_SETTINGS"
+)
+
+# Inject jitpack into the dependencyResolutionManagement repositories block
+content = re.sub(
+    r'(dependencyResolutionManagement\b.*?repositories\s*\{)',
+    r'\1\n        maven { url "https://jitpack.io" }',
+    content,
+    flags=re.DOTALL
+)
+
+open(path, "w").write(content)
+print("=== settings.gradle after patch ===")
+print(content)
+PYEOF
+          fi
+
+          SETTINGS_KTS="student-repo/settings.gradle.kts"
+          if [ -f "$SETTINGS_KTS" ]; then
+            python3 - <<'PYEOF'
+import re
+
+path = "student-repo/settings.gradle.kts"
+content = open(path).read()
+
+content = content.replace(
+    "RepositoriesMode.FAIL_ON_PROJECT_REPOS",
+    "RepositoriesMode.PREFER_SETTINGS"
+)
+
+content = re.sub(
+    r'(dependencyResolutionManagement\b.*?repositories\s*\{)',
+    r'\1\n        maven(url = "https://jitpack.io")',
+    content,
+    flags=re.DOTALL
+)
+
+open(path, "w").write(content)
+print("=== settings.gradle.kts after patch ===")
+print(content)
+PYEOF
+          fi
+
       - name: Pull runner image
         run: |
           LANGUAGE="${{ github.event.inputs.language }}"
@@ -65,10 +121,6 @@ jobs:
             -w /workspace \
             "$RUNNER_IMAGE" \
             sh -c "chmod +x gradlew 2>/dev/null || true && \
-              sed -i 's/RepositoriesMode\.FAIL_ON_PROJECT_REPOS/RepositoriesMode.PREFER_PROJECT/g' settings.gradle 2>/dev/null || true && \
-              sed -i 's/RepositoriesMode\.FAIL_ON_PROJECT_REPOS/RepositoriesMode.PREFER_PROJECT/g' settings.gradle.kts 2>/dev/null || true && \
-              echo '=== settings.gradle after patch ===' && \
-              cat settings.gradle 2>/dev/null || true && \
               ${{ github.event.inputs.build_command }}" 2>&1)
           EXIT_CODE=$?
           set -e
