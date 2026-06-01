@@ -65,8 +65,8 @@ jobs:
             -w /workspace \
             "$RUNNER_IMAGE" \
             sh -c "chmod +x gradlew 2>/dev/null || true && \
-              sed -i 's/RepositoriesMode\.FAIL_ON_PROJECT_REPOS/RepositoriesMode.PREFER_SETTINGS/g' settings.gradle 2>/dev/null || true && \
-              sed -i 's/RepositoriesMode\.FAIL_ON_PROJECT_REPOS/RepositoriesMode.PREFER_SETTINGS/g' settings.gradle.kts 2>/dev/null || true && \
+              sed -i 's/RepositoriesMode\.FAIL_ON_PROJECT_REPOS/RepositoriesMode.PREFER_PROJECT/g' settings.gradle 2>/dev/null || true && \
+              sed -i 's/RepositoriesMode\.FAIL_ON_PROJECT_REPOS/RepositoriesMode.PREFER_PROJECT/g' settings.gradle.kts 2>/dev/null || true && \
               echo '=== settings.gradle after patch ===' && \
               cat settings.gradle 2>/dev/null || true && \
               ${{ github.event.inputs.build_command }}" 2>&1)
