@@ -32,6 +32,10 @@ on:
       webhook_url:
         description: "URL to POST the result back to"
         required: true
+      harness_id:
+        description: "Harness ID to inject (empty = skip injection)"
+        required: false
+        default: ""
 
 jobs:
   build:
@@ -100,7 +104,43 @@ print(content)
 PYEOF
           fi
 
-      - name: Pull runner image
+      - name: Inject harness tests
+        env:
+          HARNESS_TOKEN: ${{ secrets.HARNESS_TOKEN }}
+        run: |
+          HARNESS_ID="${{ github.event.inputs.harness_id }}"
+          LANGUAGE="${{ github.event.inputs.language }}"
+
+          if [ -z "$HARNESS_ID" ]; then
+            echo "No harness_id — skipping"
+            exit 0
+          fi
+
+          BASE_URL="https://raw.githubusercontent.com/code-abcodes/mobile-harnesses/main"
+
+          case "$LANGUAGE" in
+            kotlin)
+              DEST="student-repo/app/src/test/java/com/harness"
+              mkdir -p "$DEST"
+              curl -f -s \
+                -H "Authorization: Bearer $HARNESS_TOKEN" \
+                "$BASE_URL/kotlin/${HARNESS_ID}.kt" \
+                -o "$DEST/HarnessTest.kt"
+              echo "Injected kotlin harness: $HARNESS_ID"
+              ;;
+            java)
+              DEST="student-repo/app/src/test/java/com/harness"
+              mkdir -p "$DEST"
+              curl -f -s \
+                -H "Authorization: Bearer $HARNESS_TOKEN" \
+                "$BASE_URL/java/${HARNESS_ID}.java" \
+                -o "$DEST/HarnessTest.java"
+              echo "Injected java harness: $HARNESS_ID"
+              ;;
+            swift)
+              echo "Swift harness injection not yet implemented"
+              ;;
+          esac
         run: |
           LANGUAGE="${{ github.event.inputs.language }}"
           case "$LANGUAGE" in

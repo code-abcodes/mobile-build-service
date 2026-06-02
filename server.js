@@ -32,6 +32,7 @@ const {
     language = "kotlin",
     buildCommand = "./gradlew assembleDebug",
     expectedOutputFile = "app/build/outputs/apk/debug/app-debug.apk",
+    harnessId = "",
   } = req.body;
 
   if (!repoUrl) {
@@ -64,6 +65,7 @@ const {
       build_command: resolvedBuildCommand,
       test_command: testCommand,
       expected_output_file: expectedOutputFile,
+      harness_id: harnessId,
       job_id: jobId,
       webhook_url: webhookUrl,
     });
@@ -142,6 +144,7 @@ function triggerWorkflow(inputs) {
         build_command: inputs.build_command,
         test_command: inputs.test_command || "",
         expected_output_file: inputs.expected_output_file || "",
+        harness_id: inputs.harness_id || "",
         job_id: inputs.job_id,
         webhook_url: inputs.webhook_url,
       },
